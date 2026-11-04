@@ -20,12 +20,21 @@
 - `created_from`/`created_to` do not say which timezone they use, so they are not relied on; rule 1 is applied on our side.
 - The feed's `request` is the current state and items can repeat, so every write is an idempotent upsert; a replay after `410` changes nothing that did not change.
 - Sites and holidays are not in the feed: loaded at start and refreshed every 5 minutes.
-- _Practice-data findings (change types seen, `seq` behaviour, hours format, feed size, rate limits) will be added after the live run._
+- Practice API, measured on a full walk of the feed:
+  - 79k unique feed items (12k `request.created`, 46k `event.created`, 21.5k `request.updated`, 2 `staff.updated`), 160 pages of 500. No other change types appeared.
+  - Items do repeat: 318 duplicate `seq`s, and 12,049 `request.created` for 12,001 requests. Page boundaries overlap, so `seq` is not strictly increasing across pages (…500, 499…). Nothing relies on `seq` order; upserts by id absorb all of it.
+  - Spot check: feed events are byte-identical to `/v1/requests/{id}/events` for the same request, so the feed is a sufficient source of events.
+  - Formats match the docs (`HH:MM` hours, `DD/MM/YYYY HH:mm` due dates, ISO `Z` timestamps, integer `at`). Jakarta opens on Saturday morning; Singapore and Sydney are weekdays only.
+  - Present in the data: System events with status `processing` (31 in the first 1,000 items; correctly not a first response), reverts with the note "Status changed in error", `null` priority (about a quarter of requests), deleted and merged requests.
+- `/ready` on the practice API: 39.7 s, 165 calls, **0** 429s (a back-to-back discovery script that did not pace calls got 2 429s, which the client handles with `Retry-After`).
+- Report timings over HTTP on the practice data: 1 May–31 Oct (11,044 rows) 84 ms, October (1,910 rows) 17 ms. A full October browse walk at `limit=200` returned 1,910 rows with no duplicates.
+- Parsers stay tolerant of small variations anyway (`H:MM`, `:SS`, 1-digit day/month, `+HHMM`), because grading uses different data: a format surprise should cost one field, not a whole site.
 
 ## How I used AI
 
 - Claude (Anthropic) as a pair: it read the kit, wrote a discovery checklist and a spec with every rule turned into precise definitions, then a plan with file ownership. Four sub-agents implemented time, sync (+ a fake helpdesk), query/cursor and rules in parallel; I reviewed and integrated, wrote the HTTP layer and the end-to-end test.
 - The e2e test's expected rows were computed by hand from `rules.md`, not by the engine, so the pipeline is checked against an independent oracle.
+- A separate reviewer agent, which had not seen the implementation, checked the code against the docs. It found no wrong rows. It did find that over-strict parsers could silently drop rows, and that a failing metadata refresh stopped the change feed (reproduced, then fixed with a regression test).
 - What I corrected or decided myself: the zero-dependency choice when the sandbox could not reach npm; snapshot paging (plain keyset breaks when a row's sort key changes mid-walk); not falling back to an older `due_at`; the literal revert-chain reading.
 
 ## Trade-offs and what I would do next
