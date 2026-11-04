@@ -1,0 +1,16 @@
+{
+  "name": "sla-report-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Response-time (SLA) report over the practice helpdesk API. Zero runtime dependencies.",
+  "main": "src/server.ts",
+  "scripts": {
+    "start": "node src/server.ts",
+    "test": "node --test --test-reporter=spec \"test/**/*.test.ts\"",
+    "typecheck": "npx -y -p typescript@5.9 tsc --noEmit -p ."
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}
