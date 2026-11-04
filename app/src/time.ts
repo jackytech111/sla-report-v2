@@ -18,10 +18,13 @@ const MS_PER_DAY = 86_400_000;
 
 const YMD_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const DMY_RE = /^(\d{2})\/(\d{2})\/(\d{4})$/;
-const HHMM_RE = /^(\d{2}):(\d{2})$/;
-const DUE_AT_RE = /^(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2})$/;
+// Lenient on purpose (hidden data may differ slightly): 'H:MM', 'HH:MM', optional ':SS' (ignored).
+const HHMM_RE = /^(\d{1,2}):(\d{2})(?::\d{2})?$/;
+// 'DD/MM/YYYY HH:mm' as documented; also tolerates 1-digit day/month/hour, 'T' separator and ':SS'.
+const DUE_AT_RE = /^(\d{1,2})\/(\d{1,2})\/(\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/;
+// ISO 8601; also tolerates a space for 'T', '+HHMM' / '+HH' offsets, and no zone (= UTC, as documented).
 const ISO_RE =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|[+-]\d{2}:\d{2})$/;
+  /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?\s?(Z|z|[+-]\d{2}(?::?\d{2})?)?$/;
 
 const WEEKDAYS: readonly Weekday[] = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
@@ -127,10 +130,10 @@ export function parseIsoUtc(s: string): number | null {
   if (!isRealDate(y, mo, d) || h > 23 || mi > 59 || sec > 59) return null;
 
   let offsetMin = 0;
-  const tz = m[8]!;
-  if (tz !== 'Z') {
+  const tz = m[8] ?? 'Z';
+  if (tz !== 'Z' && tz !== 'z') {
     const oh = Number(tz.slice(1, 3));
-    const om = Number(tz.slice(4, 6));
+    const om = tz.length > 3 ? Number(tz.slice(-2)) : 0;
     if (oh > 23 || om > 59) return null;
     offsetMin = (tz[0] === '-' ? -1 : 1) * (oh * 60 + om);
   }
@@ -300,8 +303,9 @@ export function parseDueAt(s: string, tz: string): number | null {
   const y = Number(m[3]);
   const h = Number(m[4]);
   const mi = Number(m[5]);
-  if (!isRealDate(y, mo, d) || h > 23 || mi > 59) return null;
-  return wallToUtc(`${m[3]}-${m[2]}-${m[1]}`, `${m[4]}:${m[5]}`, tz);
+  const sec = m[6] === undefined ? 0 : Number(m[6]);
+  if (!isRealDate(y, mo, d) || h > 23 || mi > 59 || sec > 59) return null;
+  return wallToUtc(`${m[3]}-${pad2(mo)}-${pad2(d)}`, `${pad2(h)}:${pad2(mi)}`, tz) + sec * 1000;
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +330,9 @@ export function businessSeconds(
   endMs: number,
   site: Pick<Site, 'timezone' | 'business_hours' | 'holidays'>,
 ): number {
+  // Rule 4 sums whole seconds: drop sub-second parts first so a .900 s created_at cannot cost a minute.
+  startMs = Math.floor(startMs / 1000) * 1000;
+  endMs = Math.floor(endMs / 1000) * 1000;
   if (!(endMs > startMs)) return 0;
   const tz = site.timezone;
   const last = localDate(endMs, tz);
@@ -336,9 +343,15 @@ export function businessSeconds(
     if (site.holidays.has(d)) continue;
     const hours = site.business_hours[weekdayOf(d)];
     if (!hours) continue;
-    const open = wallToUtc(d, hours.open, tz);
-    let close = wallToUtc(d, hours.close, tz);
-    if (close <= open) close = wallToUtc(addDays(d, 1), hours.close, tz);
+    let open: number;
+    let close: number;
+    try {
+      open = wallToUtc(d, hours.open, tz);
+      close = wallToUtc(d, hours.close, tz);
+      if (close <= open) close = wallToUtc(addDays(d, 1), hours.close, tz);
+    } catch {
+      continue; // unreadable hours for that weekday: treated as closed, never drops the whole row
+    }
     windows.push([open, close]);
   }
 

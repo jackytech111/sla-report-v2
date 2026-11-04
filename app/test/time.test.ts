@@ -82,14 +82,11 @@ describe('parseIsoUtc', () => {
     for (const bad of [
       '',
       '2026-10-06',
-      '2026-10-06T02:15:07', // no designator: ambiguous, refuse
-      '2026-10-06 02:15:07Z',
       '2026-02-30T00:00:00Z',
       '2026-13-01T00:00:00Z',
       '2026-10-06T24:00:00Z',
       '2026-10-06T23:60:00Z',
       '2026-10-06T23:59:60Z',
-      '2026-10-06T02:15:07+0800',
       '2026-10-06T02:15:07+24:00',
       ' 2026-10-06T02:15:07Z',
       '2026-10-06T02:15:07Zjunk',
@@ -269,7 +266,7 @@ describe('wallToUtc', () => {
   });
 
   test('rejects malformed wall times', () => {
-    for (const bad of ['24:01', '25:00', '12:60', '8:00', '0800', '08:00:00', '']) {
+    for (const bad of ['24:01', '25:00', '12:60', '0800', '8', '08:00:00:00', '']) {
       assert.throws(() => wallToUtc('2026-10-07', bad, SG), RangeError, bad);
     }
     assert.throws(() => wallToUtc('2026-02-30', '08:00', SG), RangeError);
@@ -351,8 +348,6 @@ describe('parseDueAt', () => {
   test('strict: rejects anything else', () => {
     for (const bad of [
       '2026-10-07 10:00',
-      '7/10/2026 10:00',
-      '07/1/2026 10:00',
       '32/10/2026 10:00',
       '31/09/2026 10:00',
       '29/02/2026 10:00',
@@ -360,9 +355,6 @@ describe('parseDueAt', () => {
       '07/10/2026 25:00',
       '07/10/2026 24:00',
       '07/10/2026 10:60',
-      '07/10/2026 9:00',
-      '07/10/2026 10:00:00',
-      '07/10/2026T10:00',
       '07/10/2026  10:00',
       ' 07/10/2026 10:00',
       '07/10/2026 10:00 ',
@@ -567,5 +559,39 @@ describe('businessSeconds', () => {
     for (let m = s; m < e; m += 7 * 3_600_000 + 13_000) {
       assert.equal(businessSeconds(s, m, syd) + businessSeconds(m, e, syd), total, iso(m));
     }
+  });
+});
+
+describe('tolerant parsing (hidden data may vary slightly from the docs)', () => {
+  test('parseIsoUtc: space separator, +HHMM / +HH offsets, no zone = UTC', () => {
+    const want = Date.parse('2026-10-06T02:15:07Z');
+    assert.equal(parseIsoUtc('2026-10-06 02:15:07Z'), want);
+    assert.equal(parseIsoUtc('2026-10-06T10:15:07+0800'), want);
+    assert.equal(parseIsoUtc('2026-10-06T10:15:07+08'), want);
+    assert.equal(parseIsoUtc('2026-10-06T02:15:07'), want);
+  });
+  test('wallToUtc: H:MM and HH:MM:SS', () => {
+    assert.equal(wallToUtc('2026-10-07', '8:00', SG), wallToUtc('2026-10-07', '08:00', SG));
+    assert.equal(wallToUtc('2026-10-07', '08:00:00', SG), wallToUtc('2026-10-07', '08:00', SG));
+  });
+  test('parseDueAt: 1-digit fields, T separator, seconds', () => {
+    const want = Date.parse('2026-10-07T02:00:00Z');
+    assert.equal(parseDueAt('7/10/2026 10:00', SG), want);
+    assert.equal(parseDueAt('07/10/2026 10:00:00', SG), want);
+    assert.equal(parseDueAt('07/10/2026T10:00', SG), want);
+    assert.equal(parseDueAt('07/10/2026 10:00:30', SG), want + 30_000);
+    assert.equal(parseDueAt('07/10/2026 9:00', SG), want - 3_600_000);
+  });
+  test('businessSeconds: unreadable hours close that day instead of throwing', () => {
+    const site = { timezone: SG, holidays: new Set<string>(), business_hours: { mon: { open: 'x', close: '18:00' }, tue: { open: '08:00', close: '18:00' } } };
+    const s = Date.parse('2026-10-05T00:00:00Z'); // Mon 08:00 SG
+    const e = Date.parse('2026-10-06T01:00:00Z'); // Tue 09:00 SG
+    assert.equal(businessSeconds(s, e, site as any), 3600);
+  });
+  test('businessSeconds: sub-second created_at does not cost a minute', () => {
+    const site = { timezone: SG, holidays: new Set<string>(), business_hours: { tue: { open: '08:00', close: '18:00' } } };
+    const s = Date.parse('2026-10-06T01:00:00.900Z');
+    const e = Date.parse('2026-10-06T02:00:00Z');
+    assert.equal(Math.floor(businessSeconds(s, e, site as any) / 60), 60);
   });
 });

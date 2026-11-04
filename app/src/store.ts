@@ -70,6 +70,11 @@ export class Store {
     this.snap = null;
   }
 
+  /** Distinct site ids seen on requests but missing from the site list (triggers a site reload). */
+  get unknownSiteCount(): number {
+    return this.warnedSites.size;
+  }
+
   get dirtyCount(): number {
     return this.dirty.size;
   }

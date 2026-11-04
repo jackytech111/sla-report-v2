@@ -8,7 +8,11 @@
 // request state), so duplicates are harmless and a 410 (expired cursor) is handled by simply
 // replaying the feed from the beginning.
 import type { ComputeRow, DayHours, HelpdeskEvent, HelpdeskRequest, Logger, Site, Weekday } from './types.ts';
-import { HelpdeskClient, ClosedError, GoneError } from './helpdesk.ts';
+import { HelpdeskClient, ClosedError, GoneError, HttpError } from './helpdesk.ts';
+
+const STAFF_REFRESH_MS = 60_000;
+const UNKNOWN_SITE_RELOAD_MS = 60_000;
+const RECOMPUTE_EVERY_PAGES = 20;
 import { Store } from './store.ts';
 import { log as defaultLog } from './log.ts';
 
@@ -16,7 +20,7 @@ import { log as defaultLog } from './log.ts';
 export function parseDmyDate(s: unknown): string | null {
   if (typeof s !== 'string') return null;
   let y: number, m: number, d: number;
-  let match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s.trim());
+  let match = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s.trim()); // 1-digit day/month tolerated
   if (match) {
     d = Number(match[1]);
     m = Number(match[2]);
@@ -116,6 +120,7 @@ export class Sync {
   private wake: (() => void) | null;
   private resolveBootstrapped: () => void;
   private lastMetaAt: number;
+  private lastStaffAt: number;
   private running: Promise<void> | null;
 
   constructor(opts: SyncOptions) {
@@ -133,6 +138,7 @@ export class Sync {
     this.stopped = false;
     this.wake = null;
     this.lastMetaAt = 0;
+    this.lastStaffAt = 0;
     this.running = null;
     this.resolveBootstrapped = () => {};
     this.bootstrapped = new Promise<void>((resolve) => {
@@ -211,8 +217,28 @@ export class Sync {
 
   /** One live cycle: maybe refresh metadata, drain the feed, recompute. Never throws. */
   async pollOnce(): Promise<void> {
+    // Metadata refresh is isolated: a failing sites/holidays/staff call must never stop the feed (level 3).
+    const now = Date.now();
+    const unknownSites = this.store.unknownSiteCount > 0 && now - this.lastMetaAt >= UNKNOWN_SITE_RELOAD_MS;
+    if (now - this.lastMetaAt >= this.refreshMetaMs || unknownSites) {
+      try {
+        await this.loadMeta();
+      } catch (err) {
+        if (this.stopped || err instanceof ClosedError) return;
+        this.lastMetaAt = Date.now(); // back off until the next refresh period instead of retrying every poll
+        this.stats.pollErrors++;
+        this.log.warn('metadata refresh failed; keeping the previous sites/staff', { error: String((err as Error)?.message ?? err) });
+      }
+    } else if (now - this.lastStaffAt >= STAFF_REFRESH_MS) {
+      try {
+        await this.loadStaff();
+      } catch (err) {
+        if (this.stopped || err instanceof ClosedError) return;
+        this.lastStaffAt = Date.now();
+        this.log.warn('staff refresh failed', { error: String((err as Error)?.message ?? err) });
+      }
+    }
     try {
-      if (Date.now() - this.lastMetaAt >= this.refreshMetaMs) await this.loadMeta();
       await this.drain();
       const changed = this.store.recompute(this.computeRow);
       this.stats.rowsChanged += changed;
@@ -269,9 +295,17 @@ export class Sync {
     const staff = await this.getAll<{ id: number; name: string }>('/v1/staff');
     const changed = this.store.setSites(sites);
     for (const p of staff) if (p && typeof p.id === 'number' && typeof p.name === 'string') this.store.setStaff(p.id, p.name);
+    this.lastStaffAt = Date.now();
     if (changed.length && this.lastMetaAt !== 0) this.log.info('sites changed', { site_ids: changed });
     this.lastMetaAt = Date.now();
     this.stats.metaRefreshes++;
+  }
+
+  /** Current staff names only (one call); renames usually also arrive as staff.updated in the feed. */
+  async loadStaff(): Promise<void> {
+    const staff = await this.getAll<{ id: number; name: string }>('/v1/staff');
+    for (const p of staff) if (p && typeof p.id === 'number' && typeof p.name === 'string') this.store.setStaff(p.id, p.name);
+    this.lastStaffAt = Date.now();
   }
 
   /** Read the change feed from the current cursor until has_more is false. */
@@ -285,8 +319,9 @@ export class Sync {
       try {
         page = await this.client.get<ChangesPage>('/v1/changes', params);
       } catch (err) {
-        if (err instanceof GoneError && this.cursor) {
-          this.log.warn('change-feed cursor expired (410); replaying from the start');
+        const rejected = err instanceof HttpError && err.status === 400 && this.cursor; // cursor no longer accepted
+        if ((err instanceof GoneError || rejected) && this.cursor) {
+          this.log.warn(`change-feed cursor ${err instanceof GoneError ? 'expired (410)' : 'rejected (400)'}; replaying from the start`);
           this.cursor = null;
           this.stats.cursorRestarts++;
           continue;
@@ -297,6 +332,12 @@ export class Sync {
       this.stats.feedPages++;
       for (const item of page.data) this.apply(item);
       applied += page.data.length;
+      // During a long drain (e.g. a replay after 410) publish progress every few pages so live
+      // changes are not held back until the whole feed is read. Only once ready (bootstrap
+      // recomputes everything at the end).
+      if (this.store.ready && this.stats.feedPages % RECOMPUTE_EVERY_PAGES === 0) {
+        this.stats.rowsChanged += this.store.recompute(this.computeRow);
+      }
       if (page.data.length) this.stats.lastChangeAt = Date.now();
       const prevCursor = this.cursor;
       if (page.next_cursor) this.cursor = page.next_cursor;

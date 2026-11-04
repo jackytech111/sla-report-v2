@@ -265,9 +265,25 @@ describe('Sync against the fake helpdesk', () => {
     assert.equal(parseDmyDate('10/08/2026'), '2026-08-10');
     assert.equal(parseDmyDate('2026-08-10'), '2026-08-10');
     assert.equal(parseDmyDate('31/02/2026'), null);
-    assert.equal(parseDmyDate('1/8/2026'), null);
+    assert.equal(parseDmyDate('1/8/2026'), '2026-08-01'); // 1-digit fields tolerated
+    assert.equal(parseDmyDate('1/8/26'), null);
     assert.equal(parseDmyDate('29/02/2028'), '2028-02-29');
     assert.equal(parseDmyDate(null), null);
+  });
+
+  test('a failing metadata refresh does not stop the feed (live updates keep flowing)', async () => {
+    const { fake, store, sync, teardown } = await setup({}, { refreshMetaMs: 0 });
+    try {
+      await sync.bootstrapped;
+      fake.failNext({ count: 1000, status: 404, path: '/v1/sites' });
+      const before = store.requests.size;
+      fake.addRequest({ site_id: 11, created_at: '2026-10-20T02:00:00Z' });
+      const t0 = Date.now();
+      while (store.requests.size === before && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 20));
+      assert.equal(store.requests.size, before + 1);
+    } finally {
+      await teardown();
+    }
   });
 
   test('bootstrap loads everything and reaches ready', async () => {
