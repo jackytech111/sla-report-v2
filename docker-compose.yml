@@ -1,0 +1,12 @@
+# Your app, wired to your practice API.
+# Put HELPDESK_URL and HELPDESK_TOKEN in a .env file next to this one
+# (copy them from your invitation page). Do not commit .env.
+services:
+  app:
+    build: ./app
+    ports:
+      - "8080:8080"
+    environment:
+      HELPDESK_URL: ${HELPDESK_URL}
+      HELPDESK_TOKEN: ${HELPDESK_TOKEN}
+      PORT: "8080"

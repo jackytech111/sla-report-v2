@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Response-time report</title>
+</head>
+<body>
+  <h1>Response-time report</h1>
+  <form id="f">
+    <label>From <input type="date" name="from" required></label>
+    <label>To <input type="date" name="to" required></label>
+    <button type="submit">Run report</button>
+  </form>
+  <p id="status"></p>
+  <table id="report" border="1">
+    <thead></thead>
+    <tbody></tbody>
+  </table>
+  <script>
+    document.getElementById("f").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const params = new URLSearchParams(new FormData(e.target));
+      const res = await fetch("/api/sla-report?" + params);
+      const data = await res.json();
+      // TODO: render `data` into the table.
+      document.getElementById("status").textContent = res.status + " " + JSON.stringify(data);
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+source "https://rubygems.org"
+
+ruby "~> 3.3.0"
+
+# Only the parts of Rails this app needs (no database, mailers, jobs, cable...).
+gem "railties", "8.0.5.1"
+gem "actionpack", "8.0.5.1"
+gem "puma", "8.0.2"
