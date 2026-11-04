@@ -2,29 +2,111 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Response-time report</title>
+  <style>
+    body { font: 14px/1.4 system-ui, sans-serif; margin: 24px; color: #1f2328; }
+    h1 { font-size: 20px; margin: 0 0 4px; } h2 { font-size: 16px; margin: 24px 0 8px; }
+    form { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 8px 0; }
+    label { display: flex; flex-direction: column; font-size: 12px; color: #57606a; }
+    input, select, button { font: inherit; padding: 4px 6px; }
+    table { border-collapse: collapse; margin-top: 8px; }
+    th, td { border: 1px solid #d0d7de; padding: 4px 8px; text-align: left; }
+    th { background: #f6f8fa; } td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .muted { color: #57606a; font-size: 12px; } .err { color: #cf222e; }
+    .yes { color: #1a7f37; } .no { color: #cf222e; } .null { color: #8c959f; }
+  </style>
 </head>
 <body>
   <h1>Response-time report</h1>
-  <form id="f">
+  <p class="muted" id="ready">Checking readiness…</p>
+
+  <form id="report-form">
     <label>From <input type="date" name="from" required></label>
     <label>To <input type="date" name="to" required></label>
+    <label>Auto-refresh <select name="refresh"><option value="15">every 15 s</option><option value="0">off</option></select></label>
     <button type="submit">Run report</button>
+    <span class="muted" id="report-status"></span>
   </form>
-  <p id="status"></p>
-  <table id="report" border="1">
-    <thead></thead>
-    <tbody></tbody>
-  </table>
+
+  <h2>Per responder</h2>
+  <table id="responders"><thead><tr><th>Responder</th><th>ID</th><th>Requests</th><th>Within target</th><th>Completed late</th></tr></thead><tbody></tbody></table>
+
+  <h2>Requests</h2>
+  <form id="browse-form">
+    <label>Site ID <input name="site_id" inputmode="numeric" size="5"></label>
+    <label>Responder ID <input name="responder_id" inputmode="numeric" size="6"></label>
+    <label>Within target <select name="within_target"><option value="">any</option><option>true</option><option>false</option></select></label>
+    <label>Completed late <select name="late"><option value="">any</option><option>true</option><option>false</option></select></label>
+    <label>Sort <select name="sort">
+      <option value="id">id ↑</option><option value="-id">id ↓</option>
+      <option value="response_business_minutes">minutes ↑</option><option value="-response_business_minutes">minutes ↓</option>
+    </select></label>
+    <label>Page size <input name="limit" value="50" size="4"></label>
+    <button type="submit">Apply</button>
+    <button type="button" id="next" disabled>Next page</button>
+    <span class="muted" id="browse-status"></span>
+  </form>
+  <table id="lines"><thead><tr><th>Request</th><th>Site</th><th>Responder</th><th>Response (business min)</th><th>Within target</th><th>Completed late</th></tr></thead><tbody></tbody></table>
+
   <script>
-    document.getElementById("f").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const params = new URLSearchParams(new FormData(e.target));
-      const res = await fetch("/api/sla-report?" + params);
+    const $ = (s) => document.querySelector(s);
+    const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const cell = (v) => v === null ? '<td class="null">—</td>' : typeof v === 'boolean'
+      ? `<td class="${v ? 'yes' : 'no'}">${v}</td>` : `<td${typeof v === 'number' ? ' class="num"' : ''}>${esc(v)}</td>`;
+
+    // Default range: the current month so far.
+    const today = new Date().toISOString().slice(0, 10);
+    $('#report-form').from.value = today.slice(0, 8) + '01';
+    $('#report-form').to.value = today;
+
+    async function checkReady() {
+      try {
+        const r = await fetch('/ready');
+        $('#ready').textContent = r.ok ? 'Ready — data is synced from the helpdesk and kept live.' : 'Syncing from the helpdesk… reports answer once ready.';
+        if (!r.ok) setTimeout(checkReady, 3000);
+      } catch { setTimeout(checkReady, 3000); }
+    }
+
+    let timer = null;
+    async function runReport() {
+      const f = $('#report-form');
+      const params = new URLSearchParams({ from: f.from.value, to: f.to.value });
+      const res = await fetch('/api/sla-report?' + params);
       const data = await res.json();
-      // TODO: render `data` into the table.
-      document.getElementById("status").textContent = res.status + " " + JSON.stringify(data);
+      if (!res.ok) { $('#report-status').innerHTML = `<span class="err">${res.status} ${esc(data.error)}</span>`; return; }
+      $('#report-status').textContent = `${data.requests.length} requests · updated ${new Date().toLocaleTimeString()}`;
+      $('#responders tbody').innerHTML = data.responders.map((r) =>
+        `<tr>${cell(r.name)}${cell(r.id)}${cell(r.requests)}${cell(r.within_target)}${cell(r.completed_late)}</tr>`).join('');
+      runBrowse();
+    }
+
+    let nextCursor = null;
+    async function runBrowse(cursor) {
+      const rf = $('#report-form'), bf = $('#browse-form');
+      const params = new URLSearchParams({ from: rf.from.value, to: rf.to.value, sort: bf.sort.value, limit: bf.limit.value || '50' });
+      for (const k of ['site_id', 'responder_id', 'within_target', 'late']) if (bf[k].value) params.set(k, bf[k].value);
+      if (cursor) params.set('cursor', cursor);
+      const res = await fetch('/api/requests?' + params);
+      const data = await res.json();
+      if (!res.ok) { $('#browse-status').innerHTML = `<span class="err">${res.status} ${esc(data.error)}</span>`; return; }
+      nextCursor = data.next_cursor;
+      $('#next').disabled = !nextCursor;
+      $('#browse-status').textContent = `${data.data.length} rows${nextCursor ? ' · more available' : ' · last page'}`;
+      $('#lines tbody').innerHTML = data.data.map((l) =>
+        `<tr>${cell(l.id)}${cell(l.site_id)}${cell(l.responder)}${cell(l.response_business_minutes)}${cell(l.within_target)}${cell(l.completed_late)}</tr>`).join('');
+    }
+
+    $('#report-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      clearInterval(timer);
+      runReport();
+      const s = Number($('#report-form').refresh.value);
+      if (s) timer = setInterval(runReport, s * 1000);
     });
+    $('#browse-form').addEventListener('submit', (e) => { e.preventDefault(); runBrowse(); });
+    $('#next').addEventListener('click', () => nextCursor && runBrowse(nextCursor));
+    checkReady();
   </script>
 </body>
 </html>
