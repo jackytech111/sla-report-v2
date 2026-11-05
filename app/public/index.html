@@ -69,7 +69,8 @@
     }
 
     let timer = null;
-    async function runReport() {
+    // Auto-refresh updates the report only; the browse table keeps its current page.
+    async function runReport(fromTimer = false) {
       const f = $('#report-form');
       const params = new URLSearchParams({ from: f.from.value, to: f.to.value });
       const res = await fetch('/api/sla-report?' + params);
@@ -78,7 +79,7 @@
       $('#report-status').textContent = `${data.requests.length} requests · updated ${new Date().toLocaleTimeString()}`;
       $('#responders tbody').innerHTML = data.responders.map((r) =>
         `<tr>${cell(r.name)}${cell(r.id)}${cell(r.requests)}${cell(r.within_target)}${cell(r.completed_late)}</tr>`).join('');
-      runBrowse();
+      if (!fromTimer) runBrowse();
     }
 
     let nextCursor = null;
@@ -102,7 +103,7 @@
       clearInterval(timer);
       runReport();
       const s = Number($('#report-form').refresh.value);
-      if (s) timer = setInterval(runReport, s * 1000);
+      if (s) timer = setInterval(() => runReport(true), s * 1000);
     });
     $('#browse-form').addEventListener('submit', (e) => { e.preventDefault(); runBrowse(); });
     $('#next').addEventListener('click', () => nextCursor && runBrowse(nextCursor));
