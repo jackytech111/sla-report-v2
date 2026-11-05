@@ -26,6 +26,7 @@
   - Spot check: feed events are byte-identical to `/v1/requests/{id}/events` for the same request, so the feed is a sufficient source of events.
   - Formats match the docs (`HH:MM` hours, `DD/MM/YYYY HH:mm` due dates, ISO `Z` timestamps, integer `at`). Jakarta opens on Saturday morning; Singapore and Sydney are weekdays only.
   - Present in the data: System events with status `processing` (31 in the first 1,000 items; correctly not a first response), reverts with the note "Status changed in error", `null` priority (about a quarter of requests), deleted and merged requests.
+- Two different staff share the name "Marcus Lee" (ids 368 and 371), and two staff were renamed during the period. `responders` is therefore grouped by `responder_id`, never by name, and always shows the current name.
 - `/ready` on the practice API: 39.7 s, 165 calls, **0** 429s (a back-to-back discovery script that did not pace calls got 2 429s, which the client handles with `Retry-After`).
 - Report timings over HTTP on the practice data: 1 May–31 Oct (11,044 rows) 84 ms, October (1,910 rows) 17 ms. A full October browse walk at `limit=200` returned 1,910 rows with no duplicates.
 - Parsers stay tolerant of small variations anyway (`H:MM`, `:SS`, 1-digit day/month, `+HHMM`), because grading uses different data: a format surprise should cost one field, not a whole site.
